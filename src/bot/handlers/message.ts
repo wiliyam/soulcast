@@ -107,10 +107,6 @@ export function createMessageHandler(deps: MessageDeps) {
         reply += `\n\n_Tools: ${toolUpdates.join(", ")}_`;
       }
 
-      if (response.cost > 0) {
-        reply += `\n_Cost: $${response.cost.toFixed(4)} | ${response.durationMs}ms_`;
-      }
-
       // Send response
       const chunks = splitMessage(reply);
       for (const chunk of chunks) {
