@@ -24,6 +24,9 @@ const activeRequests = new Set<number>();
 const MAX_GLOBAL_CONCURRENT = 5;
 let globalActive = 0;
 
+// Minimum interval between Telegram message edits (ms)
+const EDIT_THROTTLE_MS = 1500;
+
 export function createMessageHandler(deps: MessageDeps) {
   const validator = new SecurityValidator(deps.approvedDirectory);
 
@@ -33,28 +36,22 @@ export function createMessageHandler(deps: MessageDeps) {
     const text = ctx.message?.text;
 
     if (!userId || !chatId || !text) return;
-
-    // Skip commands
     if (text.startsWith("/")) return;
 
-    // SECURITY: Validate input length
     const inputCheck = validator.validateInput(text);
     if (!inputCheck.valid) {
       await ctx.reply(inputCheck.reason ?? "Message rejected.");
       return;
     }
 
-    // Track user
     deps.users.upsert(userId, ctx.from?.username ?? null);
     deps.audit.log(userId, "message", text.slice(0, 200));
 
-    // Prevent concurrent requests per user
     if (activeRequests.has(userId)) {
       await ctx.reply("Still working on your previous request...");
       return;
     }
 
-    // Global concurrency cap
     if (globalActive >= MAX_GLOBAL_CONCURRENT) {
       await ctx.reply("Server is busy. Please try again in a moment.");
       return;
@@ -63,14 +60,47 @@ export function createMessageHandler(deps: MessageDeps) {
     activeRequests.add(userId);
     globalActive++;
 
+    // Send initial status message that we'll edit with live updates
+    let statusMessageId: number | null = null;
+    try {
+      const statusMsg = await ctx.reply("🔄 _Working..._", { parse_mode: "Markdown" });
+      statusMessageId = statusMsg.message_id;
+    } catch {
+      // If initial message fails, continue without live updates
+    }
+
     // Typing indicator
     const typingInterval = setInterval(() => {
       ctx.api.sendChatAction(chatId, "typing").catch(() => {});
     }, 4000);
     await ctx.api.sendChatAction(chatId, "typing").catch(() => {});
 
+    // Track live progress for editing the status message
+    const toolLog: string[] = [];
+    let lastEditTime = 0;
+    let lastTextSnippet = "";
+
+    const updateStatusMessage = async (line: string) => {
+      if (!statusMessageId) return;
+
+      const now = Date.now();
+      if (now - lastEditTime < EDIT_THROTTLE_MS) return;
+      lastEditTime = now;
+
+      try {
+        const statusText = toolLog.length > 0
+          ? toolLog.join("\n") + (line ? `\n${line}` : "")
+          : line || "🔄 _Working..._";
+
+        await ctx.api.editMessageText(chatId, statusMessageId, statusText, {
+          parse_mode: "Markdown",
+        }).catch(() => {});
+      } catch {
+        // Edit can fail if message unchanged or too fast — ignore
+      }
+    };
+
     try {
-      // Build system prompt with memory context (capped for safety)
       let prompt = deps.systemPrompt;
 
       if (deps.memory) {
@@ -84,50 +114,91 @@ export function createMessageHandler(deps: MessageDeps) {
         }
       }
 
-      // SECURITY: Cap system prompt size
       prompt = truncateSystemPrompt(prompt);
 
-      // Execute via Claude
-      const toolUpdates: string[] = [];
+      // Execute with live streaming callbacks
       const response = await deps.claude.runCommand(text, userId, deps.approvedDirectory, {
         systemPrompt: prompt,
         onStream: (update) => {
           if (update.type === "tool_start" && update.toolName) {
             const icon = TOOL_ICONS[update.toolName] ?? "🔧";
-            toolUpdates.push(`${icon} ${update.toolName}`);
+            const detail = update.content ? ` → \`${escapeMarkdown(update.content)}\`` : "";
+            const entry = `${icon} \`${update.toolName}\`${detail}`;
+            toolLog.push(entry);
+            updateStatusMessage("");
+          } else if (update.type === "tool_end" && update.toolName) {
+            // Mark tool as complete with checkmark
+            const idx = toolLog.findIndex((l) => l.includes(`\`${update.toolName}\``) && !l.startsWith("✅"));
+            if (idx !== -1) {
+              toolLog[idx] = toolLog[idx].replace(/^./, "✅");
+              updateStatusMessage("");
+            }
+          } else if (update.type === "thinking") {
+            updateStatusMessage("🧠 _Thinking..._");
+          } else if (update.type === "text" && update.content) {
+            if (!lastTextSnippet && update.content.length > 10) {
+              lastTextSnippet = update.content.slice(0, 100);
+              updateStatusMessage("✏️ _Composing response..._");
+            }
           }
         },
       });
 
-      // Format response — guard against empty content
-      let reply = response.content || "(No response from Claude)";
-
-      if (toolUpdates.length > 0) {
-        reply += `\n\n_Tools: ${toolUpdates.join(", ")}_`;
+      // Delete the status message now that we have the real response
+      if (statusMessageId) {
+        try {
+          await ctx.api.deleteMessage(chatId, statusMessageId);
+        } catch {
+          // Message might already be deleted or expired
+        }
+        statusMessageId = null;
       }
 
-      // Send response
-      const chunks = splitMessage(reply);
+      // Send final response
+      const reply = response.content || "(No response)";
+
+      // Add tool summary if tools were used
+      let footer = "";
+      if (toolLog.length > 0) {
+        footer = `\n\n${toolLog.join("  ")}`;
+      }
+
+      const fullReply = reply + footer;
+      const chunks = splitMessage(fullReply);
+
       for (const chunk of chunks) {
         await ctx.reply(chunk, { parse_mode: "Markdown" }).catch(() =>
           ctx.reply(chunk),
         );
       }
 
-      // Auto-extract memories from conversation (user-scoped)
+      // Auto-extract memories
       if (deps.memory && !response.isError) {
         extractAndStoreMemory(deps.memory, userId, text);
       }
     } catch (error) {
-      // SECURITY: Never leak internal errors to Telegram users
       log.error({ userId, error: error instanceof Error ? error.message : error }, "Message handling failed");
-      await ctx.reply("Something went wrong. Please try again.");
+
+      // Clean up status message on error
+      if (statusMessageId) {
+        try {
+          await ctx.api.editMessageText(chatId, statusMessageId, "Something went wrong. Please try again.");
+        } catch {
+          await ctx.reply("Something went wrong. Please try again.");
+        }
+      } else {
+        await ctx.reply("Something went wrong. Please try again.");
+      }
     } finally {
       clearInterval(typingInterval);
       activeRequests.delete(userId);
       globalActive--;
     }
   };
+}
+
+function escapeMarkdown(text: string): string {
+  return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
 }
 
 function splitMessage(text: string): string[] {
@@ -152,9 +223,6 @@ function splitMessage(text: string): string[] {
   return chunks;
 }
 
-/**
- * Auto-extract "remember that..." patterns from user messages.
- */
 function extractAndStoreMemory(
   memory: MemoryStore,
   userId: number,

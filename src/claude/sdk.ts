@@ -113,9 +113,17 @@ export class ClaudeSDK {
                   options.onStream?.({
                     type: "tool_start",
                     toolName: block.name,
+                    content: block.input ? summarizeToolInput(block.name, block.input) : undefined,
                   });
+                } else if (block.type === "thinking") {
+                  options.onStream?.({ type: "thinking", content: block.thinking?.slice(0, 100) });
                 }
               }
+            } else if (event.type === "tool_result") {
+              options.onStream?.({
+                type: "tool_end",
+                toolName: event.tool_name,
+              });
             } else if (event.type === "result") {
               resultText = event.result ?? resultText;
               sessionId = event.session_id ?? null;
@@ -159,5 +167,30 @@ export class ClaudeSDK {
         isError: true,
       };
     }
+  }
+}
+
+/** Summarize tool input for live display — e.g. "Read → src/index.ts" */
+function summarizeToolInput(toolName: string, input: Record<string, unknown>): string {
+  switch (toolName) {
+    case "Read":
+      return String(input.file_path ?? "").split("/").slice(-2).join("/");
+    case "Write":
+    case "Edit":
+      return String(input.file_path ?? "").split("/").slice(-2).join("/");
+    case "Bash":
+      return String(input.command ?? "").slice(0, 60);
+    case "Glob":
+      return String(input.pattern ?? "");
+    case "Grep":
+      return String(input.pattern ?? "").slice(0, 40);
+    case "WebSearch":
+      return String(input.query ?? "").slice(0, 50);
+    case "WebFetch":
+      return String(input.url ?? "").slice(0, 60);
+    case "Agent":
+      return String(input.description ?? "").slice(0, 50);
+    default:
+      return "";
   }
 }
