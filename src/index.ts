@@ -100,6 +100,7 @@ async function main() {
     audit,
     systemPrompt,
     cavemanMode: settings.cavemanMode,
+    identityLoader: identity,
   });
 
   // 9. Graceful shutdown

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createChildLogger } from "../utils/logger.js";
 
@@ -67,5 +67,18 @@ export class IdentityLoader {
 
   getPrompt(): string {
     return this.systemPrompt;
+  }
+
+  /** Save a new SOUL.md and reload */
+  saveSoul(content: string): void {
+    mkdirSync(this.configDir, { recursive: true });
+    const soulPath = resolve(this.configDir, "SOUL.md");
+    writeFileSync(soulPath, `# Personality\n\n${content}\n`);
+    log.info("SOUL.md saved");
+  }
+
+  /** Check if SOUL.md exists (used to detect first-run) */
+  hasSoul(): boolean {
+    return existsSync(resolve(this.configDir, "SOUL.md"));
   }
 }
