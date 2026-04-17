@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.local
+*.db
+*.sqlite
+data/
+memory/*.md
+!memory/.gitkeep
+.DS_Store
+*.log

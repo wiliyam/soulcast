@@ -1,0 +1,48 @@
+{
+  "name": "babu-bhai",
+  "version": "0.1.0",
+  "description": "Babu Bhai — Open-source AI agent gateway for Telegram. Built with Bun + TypeScript.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "lint": "bunx biome check src/",
+    "format": "bunx biome format --write src/",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "grammy": "^1.35.0",
+    "zod": "^3.24.0",
+    "croner": "^9.0.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "nanoid": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0",
+    "@biomejs/biome": "^1.9.0"
+  },
+  "license": "MIT",
+  "author": "wiliyam",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wiliyam/babu-bhai.git"
+  },
+  "keywords": [
+    "telegram",
+    "claude",
+    "ai-agent",
+    "bun",
+    "typescript",
+    "claude-code",
+    "memory",
+    "bot"
+  ],
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}
