@@ -28,14 +28,17 @@ Most Claude Code Telegram wrappers are either broken, Python-based, or have no i
 |---|---|
 | **Full Claude Code Access** | Read, write, edit files, run bash, git — all from Telegram |
 | **OpenClaw-Style Identity** | SOUL.md personality system — bot knows who it is, never says "I'm Claude" |
-| **First-Chat Onboarding** | New users pick a personality (Jarvis, Sherlock, Gandalf, etc.) via inline buttons |
+| **First-Chat Onboarding** | Pick a personality (Jarvis, Sherlock, Gandalf, etc.) via inline buttons |
+| **Voice Chat** | Send voice messages — transcribed via Groq Whisper, replies with Edge TTS voice ($0/mo) |
+| **File Uploads** | Send documents, photos, videos — Claude reads and analyzes them |
+| **Live Streaming Updates** | See tools being used in real-time (📖 Read, 💻 Bash, 🔧 Edit) |
+| **Scheduled Tasks** | Cron jobs with natural language ("every day at 9am") + session isolation |
 | **Session Continuity** | Auto-resumes Claude sessions with `--resume` for multi-turn conversations |
 | **Conversation Memory** | Recent messages injected as context when sessions expire |
 | **Persistent Memory** | Per-user `/remember` and `/memory` with SQLite + Markdown storage |
 | **Interactive Setup** | `bun setup` wizard — no manual `.env` editing |
 | **Secure by Default** | User whitelist required, input sanitization, prompt injection prevention |
 | **Rate Limiting** | Token bucket per user + global concurrent request cap (5 max) |
-| **Typing Indicator** | Shows "typing..." while Claude works |
 
 ---
 
@@ -122,13 +125,17 @@ You (Telegram)
     → Auth middleware (user whitelist check)
     → Rate limiter (10 req/min per user)
     → Input validator (length + sanitization)
-    → Message handler
+    → Route by type:
+      ├─ Text → Message handler → Claude SDK
+      ├─ Voice → STT (Groq Whisper) → Claude SDK → TTS (Edge) → Voice reply
+      ├─ File → Download → Save → Claude analyzes file
+      └─ Command → /start, /new, /memory, /personality, etc.
+    → Claude SDK:
       → Load identity: Core Identity → SOUL.md → Telegram Rules → CLAUDE.md
-      → Load memory: per-user MEMORY.md + daily notes + recent messages
+      → Load memory: per-user MEMORY.md + recent messages
       → Spawn: claude --print --resume <sessionId> --system-prompt <identity+memory>
-      → Stream JSON response
-      → Parse result events
-    → Send response back to Telegram
+      → Stream JSON events → Live updates to Telegram (📖 Read, 💻 Bash, 🔧 Edit)
+    → Send final response to Telegram
 ```
 
 ### Identity System (OpenClaw-Style)
@@ -185,6 +192,67 @@ Storage: SQLite (searchable) + per-user Markdown files (human-readable).
 
 ---
 
+## Voice Chat
+
+Send a voice message to the bot — it transcribes, processes through Claude, and replies with both text and a voice message.
+
+| Component | Provider | Cost |
+|---|---|---|
+| **Speech-to-Text** | [Groq Whisper](https://console.groq.com) | Free (14.4k req/day) |
+| **Text-to-Speech** | [Microsoft Edge TTS](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/) | Free (no API key) |
+
+Personality → voice mapping:
+
+| Personality | Voice |
+|---|---|
+| Jarvis | `en-GB-RyanNeural` (British, polished) |
+| Sherlock | `en-GB-ThomasNeural` (British, analytical) |
+| Gandalf | `en-US-GuyNeural` (warm, deep) |
+| Tony Stark | `en-US-JasonNeural` (confident) |
+| Wednesday | `en-US-JennyNeural` (cool, deadpan) |
+| Morgan Freeman | `en-US-DavisNeural` (narrative) |
+
+Requires: `GROQ_API_KEY` (free from console.groq.com) + ffmpeg installed on server.
+
+---
+
+## File Uploads
+
+Send any file to the bot — it saves it and tells Claude to analyze it.
+
+| Type | Supported |
+|---|---|
+| **Documents** | PDF, JSON, CSV, TXT, code files, archives |
+| **Photos** | JPG, PNG, WebP, GIF |
+| **Videos** | MP4 |
+| **Stickers** | WebP |
+
+- Add a **caption** to tell Claude what to do: "fix the bug in this file", "summarize this PDF"
+- Files saved to `.babu-bhai/uploads/` — auto-cleaned (keeps last 20)
+- Max file size: 20MB (Telegram limit)
+
+---
+
+## Scheduled Tasks
+
+Set up cron jobs that run Claude in isolated sessions.
+
+**Natural language:**
+```
+/schedule every day at 9am — check git status and summarize changes
+/schedule every monday at 10:30 — run tests and report failures
+/schedule every 15 minutes — check server health
+```
+
+**Raw cron:**
+```
+/schedule 0 9 * * * — daily standup summary
+```
+
+Each scheduled run uses a **fresh Claude session** — no pollution of your interactive conversation.
+
+---
+
 ## Configuration
 
 All settings via environment variables (or `bun setup`):
@@ -199,6 +267,10 @@ All settings via environment variables (or `bun setup`):
 | `CLAUDE_MAX_TURNS` | No | `10` | Max tool-use turns per message |
 | `CLAUDE_TIMEOUT_SECONDS` | No | `300` | Timeout per message |
 | `ENABLE_MEMORY` | No | `true` | Enable memory system |
+| `GROQ_API_KEY` | No | — | Free key from [console.groq.com](https://console.groq.com) for voice STT |
+| `VOICE_ENABLED` | No | `true` | Enable voice messages (STT + TTS) |
+| `TTS_VOICE` | No | `en-US-AndrewNeural` | Edge TTS voice (see [voice list](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support?tabs=tts)) |
+| `ENABLE_SCHEDULER` | No | `false` | Enable cron job scheduler |
 | `LOG_LEVEL` | No | `info` | debug/info/warn/error |
 | `RATE_LIMIT_REQUESTS` | No | `10` | Max messages per minute per user |
 
@@ -282,7 +354,9 @@ src/
     core.ts                 # grammY bot + middleware chain
     handlers/
       command.ts            # /start, /new, /status, /memory, /help
-      message.ts            # Agentic message handler
+      message.ts            # Agentic message handler + live streaming
+      voice.ts              # Voice message handler (STT → Claude → TTS)
+      file.ts               # File upload handler (save + analyze)
       onboarding.ts         # First-chat personality picker
     middleware/
       auth.ts               # User whitelist
@@ -295,6 +369,12 @@ src/
     loader.ts               # OpenClaw-style prompt assembly
   memory/
     store.ts                # Per-user MEMORY.md + SQLite
+  voice/
+    stt.ts                  # Groq Whisper speech-to-text (free)
+    tts.ts                  # Edge TTS text-to-speech (free)
+  scheduler/
+    runner.ts               # Cron job runner with session isolation
+    parser.ts               # Natural language → cron expression
   storage/
     database.ts             # Bun SQLite + migrations
     models.ts               # TypeScript interfaces
@@ -308,7 +388,7 @@ src/
     validator.ts            # Input sanitization, session ID validation
 ```
 
-**Stack:** Bun, TypeScript (strict), grammY, Zod, Bun SQLite, pino, croner, nanoid
+**Stack:** Bun, TypeScript (strict), grammY, Zod, Bun SQLite, pino, croner, nanoid, msedge-tts
 
 ---
 
@@ -322,12 +402,13 @@ src/
 - [x] Persistent per-user memory (`/remember`, `/memory`)
 - [x] Interactive setup wizard (`bun setup`)
 - [x] Security hardening (5-layer defense, 3 CRITICAL + 5 HIGH fixed)
-- [ ] Voice chat (Edge TTS + Groq Whisper — $0/mo)
-- [ ] Scheduled tasks (cron) with session isolation
+- [x] Voice chat — STT (Groq Whisper, free) + TTS (Edge, free) with personality voices
+- [x] Scheduled tasks (cron) with natural language parsing + session isolation
+- [x] File uploads — documents, photos, videos analyzed by Claude
+- [x] Live streaming updates — see tools being used in real-time
 - [ ] Skill/plugin system (community extensions)
 - [ ] Webhook support (GitHub, generic)
-- [ ] Image/file upload handling
-- [ ] Multi-project support
+- [ ] Multi-project support (switch between projects)
 - [ ] Web dashboard
 - [ ] Multi-channel (Slack, Discord)
 
